@@ -2,7 +2,7 @@
 // @name         New Userscript (Part 1)
 // @namespace    http://tampermonkey.net
 // @version      2026-11-07
-// @include        https://*.edupage.*/*
+// @include      https://*.edupage.*/*
 // @grant        none
 // ==/UserScript==
 
