@@ -2,7 +2,7 @@
 // @name         New Userscript (Part 1)
 // @namespace    http://tampermonkey.net
 // @version      2026-11-07
-// @match        https://*.edupage*.
+// @include        https://*.edupage.*/*
 // @grant        none
 // ==/UserScript==
 function waitForAllElements(selector, minCount = 1, timeout) {
