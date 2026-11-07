@@ -2,7 +2,7 @@
 // @name         New Userscript (Part 1)
 // @namespace    http://tampermonkey.net
 // @version      2026-11-07
-// @match        https://*/*
+// @match        https://*.edupage*.
 // @grant        none
 // ==/UserScript==
 
@@ -44,6 +44,7 @@ function copyElement(originalButton: HTMLButtonElement): HTMLButtonElement | nul
   return clonedButton;
 }
 
+// Updated shuffler to preserve our structured student objects instead of plain strings
 function shuffleArray<T>(array: T[]): T[] {
   const shuffled = [...array];
   for (let i = shuffled.length - 1; i > 0; i--) {
@@ -57,7 +58,20 @@ function shuffleArray<T>(array: T[]): T[] {
 // @name         New Userscript (Part 2)
 // ==/UserScript==
 
-function createOverlay(textList: string[]): void {
+interface StudentData {
+  nameHtml: string;
+  isInitiallyAbsent: boolean;
+}
+
+interface RowItem {
+  rowElement: HTMLDivElement;
+  clicks: number;
+  alerts: number;
+  lastClickedTime: number;
+  isInitiallyAbsent: boolean;
+}
+
+function createOverlay(studentList: StudentData[]): void {
   const overlay: HTMLDivElement = document.createElement('div');
   overlay.style.position = 'fixed';
 
@@ -88,6 +102,26 @@ function createOverlay(textList: string[]): void {
     window.visualViewport.addEventListener('scroll', updateOverlaySize);
   }
 
+  let wakeLock: any = null;
+  const requestWakeLock = async () => {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLock = await (navigator as any).wakeLock.request('screen');
+      }
+    } catch (err) { }
+  };
+  const releaseWakeLock = async () => {
+    if (wakeLock !== null) {
+      try { await wakeLock.release(); wakeLock = null; } catch (err) { }
+    }
+  };
+  requestWakeLock();
+
+  const handleVisibilityChange = () => {
+    if (wakeLock !== null && document.visibilityState === 'visible') requestWakeLock();
+  };
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+
   const buttonsContainer: HTMLDivElement = document.createElement('div');
   buttonsContainer.style.display = 'flex'; buttonsContainer.style.flexDirection = 'column';
   buttonsContainer.style.gap = '8px'; buttonsContainer.style.width = '100%';
@@ -104,30 +138,39 @@ function createOverlay(textList: string[]): void {
       window.visualViewport.removeEventListener('resize', updateOverlaySize);
       window.visualViewport.removeEventListener('scroll', updateOverlaySize);
     }
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
+    releaseWakeLock();
     overlay.remove();
   };
 
-  const rowsData: Array<{ rowElement: HTMLDivElement; clicks: number; alerts: number }> = [];
+  const rowsData: RowItem[] = [];
+
   const reorderButtons = (): void => {
-    rowsData.sort((a, b) => a.clicks - b.clicks);
-    rowsData.forEach(item => buttonsContainer.appendChild(item.rowElement));
+    const activePool = rowsData.filter(item => !item.isInitiallyAbsent || item.clicks > 0);
+    const unclickedAbsentPool = rowsData.filter(item => item.isInitiallyAbsent && item.clicks === 0);
+
+    activePool.sort((a, b) => {
+      if (a.clicks !== b.clicks) {
+        return a.clicks - b.clicks;
+      }
+      return a.lastClickedTime - b.lastClickedTime;
+    });
+
+    activePool.forEach(item => buttonsContainer.appendChild(item.rowElement));
+    unclickedAbsentPool.forEach(item => buttonsContainer.appendChild(item.rowElement));
     buttonsContainer.appendChild(closeBtn);
   };
 
-  const totalItems = textList.length;
+  const totalItems = studentList.length;
   const verticalPadding = totalItems > 20 ? '10px' : '14px';
   const fontSize = totalItems > 20 ? '15px' : '17px';
 
-  // Standardized Pointer API implementation to preempt text selection natively
   const addLongPressListener = (element: HTMLElement, onTap: () => void, onLongPress: () => void) => {
     let pressTimer: number | undefined;
     let isLongPress = false;
-
     const start = (e: PointerEvent) => {
-      // Absorb the event context entirely to prevent system selection initialization
       if (e.cancelable) e.preventDefault();
       element.setPointerCapture(e.pointerId);
-
       isLongPress = false;
       pressTimer = window.setTimeout(() => {
         isLongPress = true;
@@ -135,52 +178,41 @@ function createOverlay(textList: string[]): void {
         onLongPress();
       }, 500);
     };
-
     const cancel = (e: PointerEvent) => {
-      if (pressTimer) {
-        clearTimeout(pressTimer);
-        pressTimer = undefined;
-      }
-      try {
-        element.releasePointerCapture(e.pointerId);
-      } catch (err) { }
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = undefined; }
+      try { element.releasePointerCapture(e.pointerId); } catch (err) { }
     };
-
     const end = (e: PointerEvent) => {
-      if (pressTimer) {
-        clearTimeout(pressTimer);
-        pressTimer = undefined;
-      }
-      try {
-        element.releasePointerCapture(e.pointerId);
-      } catch (err) { }
-
-      if (!isLongPress) {
-        onTap();
-      }
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = undefined; }
+      try { element.releasePointerCapture(e.pointerId); } catch (err) { }
+      if (!isLongPress) onTap();
       isLongPress = false;
     };
-
-    // Touch-action none instructs mobile browsers not to intercept gestures for scrolling/magnification inside target buttons
     element.style.touchAction = 'none';
-
     element.addEventListener('pointerdown', start);
     element.addEventListener('pointerup', end);
     element.addEventListener('pointercancel', cancel);
     element.addEventListener('contextmenu', (e) => e.preventDefault());
   };
 
-  textList.forEach((text: string): void => {
+  studentList.forEach((student: StudentData): void => {
     const rowWrapper = document.createElement('div');
     rowWrapper.style.display = 'flex'; rowWrapper.style.width = '100%'; rowWrapper.style.gap = '6px';
 
     const nameBtn = document.createElement('button');
-    nameBtn.innerText = `${text} (0)`;
+    nameBtn.innerHTML = `${student.nameHtml} (0)`;
     nameBtn.style.padding = `${verticalPadding} 14px`; nameBtn.style.fontSize = fontSize;
     nameBtn.style.cursor = 'pointer'; nameBtn.style.border = 'none'; nameBtn.style.borderRadius = '6px';
-    nameBtn.style.backgroundColor = '#007bff'; nameBtn.style.color = 'white'; nameBtn.style.textAlign = 'left';
-    nameBtn.style.flex = '1';
+    nameBtn.style.textAlign = 'left'; nameBtn.style.flex = '1';
     nameBtn.style.userSelect = 'none';
+
+    if (student.isInitiallyAbsent) {
+      nameBtn.style.backgroundColor = '#343a40';
+      nameBtn.style.color = '#6c757d';
+    } else {
+      nameBtn.style.backgroundColor = '#007bff';
+      nameBtn.style.color = 'white';
+    }
 
     const alertBtn = document.createElement('button');
     alertBtn.innerText = '⚠️ 0';
@@ -190,12 +222,36 @@ function createOverlay(textList: string[]): void {
     alertBtn.style.minWidth = '75px';
     alertBtn.style.userSelect = 'none';
 
-    const rowState = { rowElement: rowWrapper, clicks: 0, alerts: 0 };
+    const rowState: RowItem = {
+      rowElement: rowWrapper,
+      clicks: 0,
+      alerts: 0,
+      lastClickedTime: 0,
+      isInitiallyAbsent: student.isInitiallyAbsent
+    };
     rowsData.push(rowState);
 
     addLongPressListener(nameBtn,
-      () => { rowState.clicks++; nameBtn.innerText = `${text} (${rowState.clicks})`; reorderButtons(); },
-      () => { if (rowState.clicks > 0) { rowState.clicks--; nameBtn.innerText = `${text} (${rowState.clicks})`; reorderButtons(); } }
+      () => {
+        rowState.clicks++;
+        rowState.lastClickedTime = Date.now();
+        nameBtn.innerHTML = `${student.nameHtml} (${rowState.clicks})`;
+        nameBtn.style.backgroundColor = '#007bff';
+        nameBtn.style.color = 'white';
+        reorderButtons();
+      },
+      () => {
+        if (rowState.clicks > 0) {
+          rowState.clicks--;
+          rowState.lastClickedTime = Date.now();
+          nameBtn.innerHTML = `${student.nameHtml} (${rowState.clicks})`;
+          if (rowState.clicks === 0 && rowState.isInitiallyAbsent) {
+            nameBtn.style.backgroundColor = '#343a40';
+            nameBtn.style.color = '#6c757d';
+          }
+          reorderButtons();
+        }
+      }
     );
 
     addLongPressListener(alertBtn,
@@ -212,8 +268,17 @@ function createOverlay(textList: string[]): void {
 }
 
 async function init() {
-  const students = await waitForAllElements('.student .name');
-  const names = shuffleArray(students.map(s => s.innerHTML));
+  const studentElements = await waitForAllElements<HTMLElement>('.student');
+
+  const studentsData: StudentData[] = studentElements.map(el => {
+    const nameEl = el.querySelector('.name');
+    return {
+      nameHtml: nameEl ? nameEl.innerHTML : 'Unknown',
+      isInitiallyAbsent: el.classList.contains('absent')
+    };
+  });
+
+  const shuffledStudents = shuffleArray(studentsData);
 
   const closeButton = document.querySelector('[role=dialog]:has(.student .name) button[title=Close]');
   closeButton?.addEventListener('click', () => { init(); });
@@ -229,7 +294,7 @@ async function init() {
     newButton.classList.remove('button-green');
     newButton.classList.add('button-blue');
     newButton.innerHTML = 'Roll Call';
-    newButton.addEventListener('click', () => { createOverlay(names); });
+    newButton.addEventListener('click', () => { createOverlay(shuffledStudents); });
   }, 1000);
 }
 
