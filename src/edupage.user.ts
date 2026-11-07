@@ -1,301 +1,167 @@
 // ==UserScript==
-// @name         New Userscript (Part 1)
+// @name         EduPage Roll Call Extension
 // @namespace    http://tampermonkey.net
 // @version      2026-11-07
 // @include      https://*.edupage.*/*
 // @grant        none
 // ==/UserScript==
 
-function waitForAllElements<T extends HTMLElement = HTMLElement>(
-  selector: string,
-  minCount: number = 1,
-  timeout?: number
-): Promise<T[]> {
+interface StudentData { nameHtml: string; isInitiallyAbsent: boolean; }
+interface RowItem { rowElement: HTMLDivElement; clicks: number; alerts: number; lastClickedTime: number; isInitiallyAbsent: boolean; }
+
+function waitForAllElements<T extends HTMLElement = HTMLElement>(selector: string, minCount = 1, timeout?: number): Promise<T[]> {
   return new Promise((resolve, reject) => {
     let timer: number | undefined;
-    const checkElements = (observerToDisconnect?: MutationObserver) => {
-      const elements = Array.from(document.querySelectorAll<T>(selector));
-      if (elements.length >= minCount) {
-        if (observerToDisconnect) observerToDisconnect.disconnect();
-        if (timer) clearTimeout(timer);
-        resolve(elements);
-        return true;
-      }
+    const check = (obs?: MutationObserver) => {
+      const el = Array.from(document.querySelectorAll<T>(selector));
+      if (el.length >= minCount) { if (obs) obs.disconnect(); if (timer) clearTimeout(timer); resolve(el); return true; }
       return false;
     };
-    if (checkElements()) return;
-    const observer = new MutationObserver((_, obs) => { checkElements(obs); });
+    if (check()) return;
+    const observer = new MutationObserver((_, obs) => check(obs));
     observer.observe(document.body, { childList: true, subtree: true });
-    if (timeout) {
-      timer = window.setTimeout(() => {
-        observer.disconnect();
-        const currentElements = Array.from(document.querySelectorAll<T>(selector));
-        reject(new Error(`Timeout. Found ${currentElements.length}/${minCount} items.`));
-      }, timeout);
-    }
+    if (timeout) timer = window.setTimeout(() => { observer.disconnect(); reject(new Error("Timeout")); }, timeout);
   });
 }
 
-function copyElement(originalButton: HTMLButtonElement): HTMLButtonElement | null {
-  if (!originalButton) return null;
-  const clonedButton = originalButton.cloneNode(true) as HTMLButtonElement;
-  clonedButton.id = 'new-button';
-  originalButton.parentElement?.insertBefore(clonedButton, originalButton);
-  return clonedButton;
+function copyElement(orig: HTMLButtonElement): HTMLButtonElement | null {
+  if (!orig) return null;
+  const clone = orig.cloneNode(true) as HTMLButtonElement;
+  clone.id = 'new-button';
+  orig.parentElement?.insertBefore(clone, orig);
+  return clone;
 }
 
-// Updated shuffler to preserve our structured student objects instead of plain strings
-function shuffleArray<T>(array: T[]): T[] {
-  const shuffled = [...array];
-  for (let i = shuffled.length - 1; i > 0; i--) {
+function shuffleArray<T>(arr: T[]): T[] {
+  const shuff = [...arr];
+  for (let i = shuff.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i]!, shuffled[j]!] = [shuffled[j]!, shuffled[i]!];
+    [shuff[i]!, shuff[j]!] = [shuff[j]!, shuff[i]!];
   }
-  return shuffled;
-}
-
-// ==UserScript==
-// @name         New Userscript (Part 2)
-// ==/UserScript==
-
-interface StudentData {
-  nameHtml: string;
-  isInitiallyAbsent: boolean;
-}
-
-interface RowItem {
-  rowElement: HTMLDivElement;
-  clicks: number;
-  alerts: number;
-  lastClickedTime: number;
-  isInitiallyAbsent: boolean;
+  return shuff;
 }
 
 function createOverlay(studentList: StudentData[]): void {
-  const overlay: HTMLDivElement = document.createElement('div');
-  overlay.style.position = 'fixed';
+  const overlay = document.createElement('div');
+  overlay.style.cssText = "position:fixed;background:rgba(0,0,0,0.95);z-index:2147483647;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;box-sizing:border-box;overflow-y:auto;padding:12px;font-family:Arial,sans-serif;user-select:none;";
 
-  const updateOverlaySize = () => {
+  const resize = () => {
     const vv = window.visualViewport;
-    if (vv) {
-      overlay.style.width = `${vv.width}px`;
-      overlay.style.height = `${vv.height}px`;
-      overlay.style.top = `${vv.offsetTop}px`;
-      overlay.style.left = `${vv.offsetLeft}px`;
-    } else {
-      overlay.style.width = '100%'; overlay.style.height = '100%';
-      overlay.style.top = '0'; overlay.style.left = '0';
-    }
+    if (vv) { overlay.style.width = vv.width + "px"; overlay.style.height = vv.height + "px"; overlay.style.top = vv.offsetTop + "px"; overlay.style.left = vv.offsetLeft + "px"; }
+    else { overlay.style.width = "100%"; overlay.style.height = "100%"; overlay.style.top = "0"; overlay.style.left = "0"; }
   };
-  updateOverlaySize();
+  resize();
+  if (window.visualViewport) { window.visualViewport.addEventListener('resize', resize); window.visualViewport.addEventListener('scroll', resize); }
 
-  overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.95)';
-  overlay.style.zIndex = '2147483647';
-  overlay.style.display = 'flex'; overlay.style.flexDirection = 'column';
-  overlay.style.alignItems = 'stretch'; overlay.style.justifyContent = 'flex-start';
-  overlay.style.boxSizing = 'border-box'; overlay.style.overflowY = 'auto';
-  overlay.style.padding = '12px'; overlay.style.fontFamily = 'Arial, sans-serif';
-  overlay.style.userSelect = 'none';
+  let wl: any = null;
+  const lock = async () => { try { if ('wakeLock' in navigator) wl = await (navigator as any).wakeLock.request('screen'); } catch (e) { } };
+  const unlock = async () => { if (wl) { try { await wl.release(); wl = null; } catch (e) { } } };
+  lock();
+  const vis = () => { if (wl !== null && document.visibilityState === 'visible') lock(); };
+  document.addEventListener('visibilitychange', vis);
 
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', updateOverlaySize);
-    window.visualViewport.addEventListener('scroll', updateOverlaySize);
-  }
+  const container = document.createElement('div');
+  container.style.cssText = "display:flex;flex-direction:column;gap:8px;width:100%;";
+  overlay.appendChild(container);
 
-  let wakeLock: any = null;
-  const requestWakeLock = async () => {
-    try {
-      if ('wakeLock' in navigator) {
-        wakeLock = await (navigator as any).wakeLock.request('screen');
-      }
-    } catch (err) { }
-  };
-  const releaseWakeLock = async () => {
-    if (wakeLock !== null) {
-      try { await wakeLock.release(); wakeLock = null; } catch (err) { }
-    }
-  };
-  requestWakeLock();
-
-  const handleVisibilityChange = () => {
-    if (wakeLock !== null && document.visibilityState === 'visible') requestWakeLock();
-  };
-  document.addEventListener('visibilitychange', handleVisibilityChange);
-
-  const buttonsContainer: HTMLDivElement = document.createElement('div');
-  buttonsContainer.style.display = 'flex'; buttonsContainer.style.flexDirection = 'column';
-  buttonsContainer.style.gap = '8px'; buttonsContainer.style.width = '100%';
-  overlay.appendChild(buttonsContainer);
-
-  const closeBtn: HTMLButtonElement = document.createElement('button');
+  const closeBtn = document.createElement('button');
   closeBtn.innerText = '✕ Close Roll Call';
-  closeBtn.style.padding = '14px'; closeBtn.style.fontSize = '16px'; closeBtn.style.fontWeight = 'bold';
-  closeBtn.style.cursor = 'pointer'; closeBtn.style.border = 'none'; closeBtn.style.borderRadius = '6px';
-  closeBtn.style.backgroundColor = '#ff4d4d'; closeBtn.style.color = 'white'; closeBtn.style.marginTop = '16px';
+  closeBtn.style.cssText = "padding:14px;font-size:16px;font-weight:bold;cursor:pointer;border:none;border-radius:6px;background:#ff4d4d;color:white;margin-top:16px;";
 
-  closeBtn.onclick = (): void => {
-    if (window.visualViewport) {
-      window.visualViewport.removeEventListener('resize', updateOverlaySize);
-      window.visualViewport.removeEventListener('scroll', updateOverlaySize);
-    }
-    document.removeEventListener('visibilitychange', handleVisibilityChange);
-    releaseWakeLock();
-    overlay.remove();
+  closeBtn.onclick = () => {
+    if (window.visualViewport) { window.visualViewport.removeEventListener('resize', resize); window.visualViewport.removeEventListener('scroll', resize); }
+    document.removeEventListener('visibilitychange', vis);
+    unlock(); overlay.remove();
   };
 
   const rowsData: RowItem[] = [];
-
-  const reorderButtons = (): void => {
-    const activePool = rowsData.filter(item => !item.isInitiallyAbsent || item.clicks > 0);
-    const unclickedAbsentPool = rowsData.filter(item => item.isInitiallyAbsent && item.clicks === 0);
-
-    activePool.sort((a, b) => {
-      if (a.clicks !== b.clicks) {
-        return a.clicks - b.clicks;
-      }
-      return a.lastClickedTime - b.lastClickedTime;
-    });
-
-    activePool.forEach(item => buttonsContainer.appendChild(item.rowElement));
-    unclickedAbsentPool.forEach(item => buttonsContainer.appendChild(item.rowElement));
-    buttonsContainer.appendChild(closeBtn);
+  const render = () => {
+    const active = rowsData.filter(r => !r.isInitiallyAbsent || r.clicks > 0);
+    const absent = rowsData.filter(r => r.isInitiallyAbsent && r.clicks === 0);
+    active.sort((a, b) => a.clicks !== b.clicks ? a.clicks - b.clicks : a.lastClickedTime - b.lastClickedTime);
+    active.forEach(r => container.appendChild(r.rowElement));
+    absent.forEach(r => container.appendChild(r.rowElement));
+    container.appendChild(closeBtn);
   };
 
-  const totalItems = studentList.length;
-  const verticalPadding = totalItems > 20 ? '10px' : '14px';
-  const fontSize = totalItems > 20 ? '15px' : '17px';
-
-  const addLongPressListener = (element: HTMLElement, onTap: () => void, onLongPress: () => void) => {
-    let pressTimer: number | undefined;
-    let isLongPress = false;
-    const start = (e: PointerEvent) => {
-      if (e.cancelable) e.preventDefault();
-      element.setPointerCapture(e.pointerId);
-      isLongPress = false;
-      pressTimer = window.setTimeout(() => {
-        isLongPress = true;
-        if (navigator.vibrate) navigator.vibrate(40);
-        onLongPress();
-      }, 500);
-    };
-    const cancel = (e: PointerEvent) => {
-      if (pressTimer) { clearTimeout(pressTimer); pressTimer = undefined; }
-      try { element.releasePointerCapture(e.pointerId); } catch (err) { }
-    };
-    const end = (e: PointerEvent) => {
-      if (pressTimer) { clearTimeout(pressTimer); pressTimer = undefined; }
-      try { element.releasePointerCapture(e.pointerId); } catch (err) { }
-      if (!isLongPress) onTap();
-      isLongPress = false;
-    };
-    element.style.touchAction = 'none';
-    element.addEventListener('pointerdown', start);
-    element.addEventListener('pointerup', end);
-    element.addEventListener('pointercancel', cancel);
-    element.addEventListener('contextmenu', (e) => e.preventDefault());
+  const colorAlert = (btn: HTMLButtonElement, count: number) => {
+    // 0 starts at soft, light yellow. As it climbs to 20, it descends into intense dark red.
+    const f = Math.min(count / 20, 1);
+    const h = Math.round(60 - (f * 60)); // Hue: 60 (Yellow) down to 0 (Red)
+    const l = Math.round(85 - (f * 45)); // Lightness: 85% (Light) down to 40% (Darker bold red)
+    btn.style.background = `hsl(${h},100%,${l}%)`;
+    btn.style.color = l > 65 ? '#111' : 'white'; // Readable high contrast shift
   };
 
-  studentList.forEach((student: StudentData): void => {
-    const rowWrapper = document.createElement('div');
-    rowWrapper.style.display = 'flex'; rowWrapper.style.width = '100%'; rowWrapper.style.gap = '6px';
+  const pad = studentList.length > 20 ? '10px' : '14px', fs = studentList.length > 20 ? '15px' : '17px';
 
-    const nameBtn = document.createElement('button');
-    nameBtn.innerHTML = `${student.nameHtml} (0)`;
-    nameBtn.style.padding = `${verticalPadding} 14px`; nameBtn.style.fontSize = fontSize;
-    nameBtn.style.cursor = 'pointer'; nameBtn.style.border = 'none'; nameBtn.style.borderRadius = '6px';
-    nameBtn.style.textAlign = 'left'; nameBtn.style.flex = '1';
-    nameBtn.style.userSelect = 'none';
+  const addLP = (el: HTMLElement, tap: () => void, lp: () => void) => {
+    let t: number | undefined, isLP = false;
+    const start = (e: PointerEvent) => { if (e.cancelable) e.preventDefault(); el.setPointerCapture(e.pointerId); isLP = false; t = window.setTimeout(() => { isLP = true; if (navigator.vibrate) navigator.vibrate(40); lp(); }, 500); };
+    const cancel = (e: PointerEvent) => { if (t) clearTimeout(t); try { el.releasePointerCapture(e.pointerId); } catch (err) { } };
+    const end = (e: PointerEvent) => { if (t) clearTimeout(t); try { el.releasePointerCapture(e.pointerId); } catch (err) { } if (!isLP) tap(); isLP = false; };
+    el.style.touchAction = 'none'; el.addEventListener('pointerdown', start); el.addEventListener('pointerup', end); el.addEventListener('pointercancel', cancel); el.addEventListener('contextmenu', e => e.preventDefault());
+  };
 
-    if (student.isInitiallyAbsent) {
-      nameBtn.style.backgroundColor = '#343a40';
-      nameBtn.style.color = '#6c757d';
-    } else {
-      nameBtn.style.backgroundColor = '#007bff';
-      nameBtn.style.color = 'white';
-    }
+  studentList.forEach(st => {
+    const row = document.createElement('div'); row.style.cssText = "display:flex;width:100%;gap:6px;box-sizing:border-box;";
+    const nBtn = document.createElement('button'); nBtn.innerHTML = `${st.nameHtml} (0)`;
+    nBtn.style.cssText = `padding:${pad} 14px;font-size:${fs};cursor:pointer;border:none;border-radius:6px;text-align:left;flex:1;user-select:none;`;
+    if (st.isInitiallyAbsent) { nBtn.style.background = '#343a40'; nBtn.style.color = '#6c757d'; }
+    else { nBtn.style.background = '#007bff'; nBtn.style.color = 'white'; }
 
-    const alertBtn = document.createElement('button');
-    alertBtn.innerText = '⚠️ 0';
-    alertBtn.style.padding = `${verticalPadding} 12px`; alertBtn.style.fontSize = fontSize;
-    alertBtn.style.fontWeight = 'bold'; alertBtn.style.cursor = 'pointer'; alertBtn.style.border = 'none';
-    alertBtn.style.borderRadius = '6px'; alertBtn.style.backgroundColor = '#dc3545'; alertBtn.style.color = 'white';
-    alertBtn.style.minWidth = '75px';
-    alertBtn.style.userSelect = 'none';
+    const aBtn = document.createElement('button'); aBtn.innerText = '⚠️ 0';
+    aBtn.style.cssText = `padding:${pad} 12px;font-size:${fs};font-weight:bold;cursor:pointer;border:none;border-radius:6px;min-width:75px;user-select:none;transition:background 0.2s;`;
+    colorAlert(aBtn, 0); // Correctly calculate initial light yellow style color immediately on boot
 
-    const rowState: RowItem = {
-      rowElement: rowWrapper,
-      clicks: 0,
-      alerts: 0,
-      lastClickedTime: 0,
-      isInitiallyAbsent: student.isInitiallyAbsent
-    };
-    rowsData.push(rowState);
+    const state: RowItem = { rowElement: row, clicks: 0, alerts: 0, lastClickedTime: 0, isInitiallyAbsent: st.isInitiallyAbsent };
+    rowsData.push(state);
 
-    addLongPressListener(nameBtn,
+    addLP(nBtn,
       () => {
-        rowState.clicks++;
-        rowState.lastClickedTime = Date.now();
-        nameBtn.innerHTML = `${student.nameHtml} (${rowState.clicks})`;
-        nameBtn.style.backgroundColor = '#007bff';
-        nameBtn.style.color = 'white';
-        reorderButtons();
+        if (state.isInitiallyAbsent && state.clicks === 0) {
+          const act = rowsData.filter(r => r !== state && (!r.isInitiallyAbsent || r.clicks > 0));
+          state.clicks = act.length > 0 ? Math.round(act.reduce((s, r) => s + r.clicks, 0) / act.length) : 1;
+        } else state.clicks++;
+        state.lastClickedTime = Date.now(); nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
+        nBtn.style.background = '#007bff'; nBtn.style.color = 'white'; render();
       },
       () => {
-        if (rowState.clicks > 0) {
-          rowState.clicks--;
-          rowState.lastClickedTime = Date.now();
-          nameBtn.innerHTML = `${student.nameHtml} (${rowState.clicks})`;
-          if (rowState.clicks === 0 && rowState.isInitiallyAbsent) {
-            nameBtn.style.backgroundColor = '#343a40';
-            nameBtn.style.color = '#6c757d';
-          }
-          reorderButtons();
+        if (state.clicks > 0) {
+          state.clicks--; state.lastClickedTime = Date.now(); nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
+          if (state.clicks === 0 && state.isInitiallyAbsent) { nBtn.style.background = '#343a40'; nBtn.style.color = '#6c757d'; }
+          render();
         }
       }
     );
 
-    addLongPressListener(alertBtn,
-      () => { rowState.alerts++; alertBtn.innerText = `⚠️ ${rowState.alerts}`; },
-      () => { if (rowState.alerts > 0) { rowState.alerts--; alertBtn.innerText = `⚠️ ${rowState.alerts}`; } }
+    addLP(aBtn,
+      () => { state.alerts++; aBtn.innerText = `⚠️ ${state.alerts}`; colorAlert(aBtn, state.alerts); },
+      () => { if (state.alerts > 0) { state.alerts--; aBtn.innerText = `⚠️ ${state.alerts}`; colorAlert(aBtn, state.alerts); } }
     );
 
-    rowWrapper.appendChild(nameBtn);
-    rowWrapper.appendChild(alertBtn);
+    row.appendChild(nBtn); row.appendChild(aBtn);
   });
-
-  reorderButtons();
-  document.body.appendChild(overlay);
+  render(); document.body.appendChild(overlay);
 }
 
 async function init() {
-  const studentElements = await waitForAllElements<HTMLElement>('.student');
-
-  const studentsData: StudentData[] = studentElements.map(el => {
-    const nameEl = el.querySelector('.name');
-    return {
-      nameHtml: nameEl ? nameEl.innerHTML : 'Unknown',
-      isInitiallyAbsent: el.classList.contains('absent')
-    };
-  });
-
-  const shuffledStudents = shuffleArray(studentsData);
-
-  const closeButton = document.querySelector('[role=dialog]:has(.student .name) button[title=Close]');
-  closeButton?.addEventListener('click', () => { init(); });
+  const elements = await waitForAllElements<HTMLElement>('.student');
+  const data: StudentData[] = elements.map(el => ({
+    nameHtml: el.querySelector('.name')?.innerHTML || 'Unknown',
+    isInitiallyAbsent: el.classList.contains('absent')
+  }));
+  const shuffled = shuffleArray(data);
+  const close = document.querySelector('[role=dialog]:has(.student .name) button[title=Close]');
+  close?.addEventListener('click', () => init());
 
   setTimeout(() => {
-    const saveButton = document.querySelector('[role=dialog]:has(.student .name) .asc-button-container:has(.button-green)') as HTMLButtonElement | null;
-    if (!saveButton) return;
-
-    const clonedBtnContainer = copyElement(saveButton);
-    const newButton = clonedBtnContainer?.firstElementChild as HTMLElement | null;
-    if (!newButton) return;
-
-    newButton.classList.remove('button-green');
-    newButton.classList.add('button-blue');
-    newButton.innerHTML = 'Roll Call';
-    newButton.addEventListener('click', () => { createOverlay(shuffledStudents); });
+    const save = document.querySelector('[role=dialog]:has(.student .name) .asc-button-container:has(.button-green)') as HTMLButtonElement | null;
+    if (!save) return;
+    const btn = copyElement(save)?.firstElementChild as HTMLElement | null;
+    if (!btn) return;
+    btn.classList.remove('button-green'); btn.classList.add('button-blue'); btn.innerHTML = 'Roll Call';
+    btn.addEventListener('click', () => createOverlay(shuffled));
   }, 1000);
 }
-
 init();
