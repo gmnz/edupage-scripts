@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EduPage Roll Call Extension
 // @namespace    http://tampermonkey.net
-// @version      2026-11-07
+// @version      2026-11-08
 // @include      https://*.edupage.*/*
 // @grant        none
 // ==/UserScript==
@@ -44,7 +44,6 @@ function shuffleArray<T>(arr: T[]): T[] {
 function createOverlay(studentList: StudentData[]): void {
   const overlay = document.createElement('div');
   overlay.style.cssText = "position:fixed;background:rgba(0,0,0,0.95);z-index:2147483647;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;box-sizing:border-box;overflow-y:auto;padding:12px;font-family:Arial,sans-serif;user-select:none;";
-
   const resize = () => {
     const vv = window.visualViewport;
     if (vv) { overlay.style.width = vv.width + "px"; overlay.style.height = vv.height + "px"; overlay.style.top = vv.offsetTop + "px"; overlay.style.left = vv.offsetLeft + "px"; }
@@ -52,14 +51,12 @@ function createOverlay(studentList: StudentData[]): void {
   };
   resize();
   if (window.visualViewport) { window.visualViewport.addEventListener('resize', resize); window.visualViewport.addEventListener('scroll', resize); }
-
   let wl: any = null;
   const lock = async () => { try { if ('wakeLock' in navigator) wl = await (navigator as any).wakeLock.request('screen'); } catch (e) { } };
   const unlock = async () => { if (wl) { try { await wl.release(); wl = null; } catch (e) { } } };
   lock();
   const vis = () => { if (wl !== null && document.visibilityState === 'visible') lock(); };
   document.addEventListener('visibilitychange', vis);
-
   const container = document.createElement('div');
   container.style.cssText = "display:flex;flex-direction:column;gap:8px;width:100%;";
   overlay.appendChild(container);
@@ -67,7 +64,6 @@ function createOverlay(studentList: StudentData[]): void {
   const closeBtn = document.createElement('button');
   closeBtn.innerText = '✕ Close Roll Call';
   closeBtn.style.cssText = "padding:14px;font-size:16px;font-weight:bold;cursor:pointer;border:none;border-radius:6px;background:#ff4d4d;color:white;margin-top:16px;";
-
   closeBtn.onclick = () => {
     if (window.visualViewport) { window.visualViewport.removeEventListener('resize', resize); window.visualViewport.removeEventListener('scroll', resize); }
     document.removeEventListener('visibilitychange', vis);
@@ -75,6 +71,7 @@ function createOverlay(studentList: StudentData[]): void {
   };
 
   const rowsData: RowItem[] = [];
+
   const render = () => {
     const active = rowsData.filter(r => !r.isInitiallyAbsent || r.clicks > 0);
     const absent = rowsData.filter(r => r.isInitiallyAbsent && r.clicks === 0);
@@ -95,24 +92,94 @@ function createOverlay(studentList: StudentData[]): void {
 
   const pad = studentList.length > 20 ? '10px' : '14px', fs = studentList.length > 20 ? '15px' : '17px';
 
+  // Updated pointer handling: allow scrolling and prevent accidental taps.
   const addLP = (el: HTMLElement, tap: () => void, lp: () => void) => {
-    let t: number | undefined, isLP = false;
-    const start = (e: PointerEvent) => { if (e.cancelable) e.preventDefault(); el.setPointerCapture(e.pointerId); isLP = false; t = window.setTimeout(() => { isLP = true; if (navigator.vibrate) navigator.vibrate(40); lp(); }, 500); };
-    const cancel = (e: PointerEvent) => { if (t) clearTimeout(t); try { el.releasePointerCapture(e.pointerId); } catch (err) { } };
-    const end = (e: PointerEvent) => { if (t) clearTimeout(t); try { el.releasePointerCapture(e.pointerId); } catch (err) { } if (!isLP) tap(); isLP = false; };
-    el.style.touchAction = 'none'; el.addEventListener('pointerdown', start); el.addEventListener('pointerup', end); el.addEventListener('pointercancel', cancel); el.addEventListener('contextmenu', e => e.preventDefault());
+    let t: number | undefined;
+    let isLP = false;
+    let moved = false;
+    let startX = 0;
+    let startY = 0;
+
+    const MOVE_THRESHOLD = 10;
+
+    const clear = () => {
+      if (t !== undefined) {
+        clearTimeout(t);
+        t = undefined;
+      }
+    };
+
+    const start = (e: PointerEvent) => {
+      // Ignore non-primary mouse buttons.
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+      clear();
+      isLP = false;
+      moved = false;
+
+      startX = e.clientX;
+      startY = e.clientY;
+
+      t = window.setTimeout(() => {
+        if (!moved) {
+          isLP = true;
+          if (navigator.vibrate) navigator.vibrate(40);
+          lp();
+        }
+      }, 500);
+    };
+
+    const move = (e: PointerEvent) => {
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+
+      if (Math.abs(dx) > MOVE_THRESHOLD ||
+        Math.abs(dy) > MOVE_THRESHOLD) {
+        moved = true;
+        clear();
+      }
+    };
+
+    const cancel = () => {
+      clear();
+      moved = true;
+    };
+
+    const end = () => {
+      clear();
+
+      if (!moved && !isLP) {
+        tap();
+      }
+
+      isLP = false;
+    };
+
+    // Allow native vertical scrolling.
+    el.style.touchAction = 'pan-y';
+
+    el.addEventListener('pointerdown', start);
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', cancel);
+    el.addEventListener('contextmenu', e => e.preventDefault());
   };
 
   studentList.forEach(st => {
-    const row = document.createElement('div'); row.style.cssText = "display:flex;width:100%;gap:6px;box-sizing:border-box;";
-    const nBtn = document.createElement('button'); nBtn.innerHTML = `${st.nameHtml} (0)`;
+    const row = document.createElement('div');
+    row.style.cssText = "display:flex;width:100%;gap:6px;box-sizing:border-box;";
+
+    const nBtn = document.createElement('button');
+    nBtn.innerHTML = `${st.nameHtml} (0)`;
     nBtn.style.cssText = `padding:${pad} 14px;font-size:${fs};cursor:pointer;border:none;border-radius:6px;text-align:left;flex:1;user-select:none;`;
+
     if (st.isInitiallyAbsent) { nBtn.style.background = '#343a40'; nBtn.style.color = '#6c757d'; }
     else { nBtn.style.background = '#007bff'; nBtn.style.color = 'white'; }
 
-    const aBtn = document.createElement('button'); aBtn.innerText = '⚠️ 0';
+    const aBtn = document.createElement('button');
+    aBtn.innerText = '⚠️ 0';
     aBtn.style.cssText = `padding:${pad} 12px;font-size:${fs};font-weight:bold;cursor:pointer;border:none;border-radius:6px;min-width:75px;user-select:none;transition:background 0.2s;`;
-    colorAlert(aBtn, 0); // Correctly calculate initial light yellow style color immediately on boot
+    colorAlert(aBtn, 0);
 
     const state: RowItem = { rowElement: row, clicks: 0, alerts: 0, lastClickedTime: 0, isInitiallyAbsent: st.isInitiallyAbsent };
     rowsData.push(state);
@@ -123,34 +190,60 @@ function createOverlay(studentList: StudentData[]): void {
           const act = rowsData.filter(r => r !== state && (!r.isInitiallyAbsent || r.clicks > 0));
           state.clicks = act.length > 0 ? Math.round(act.reduce((s, r) => s + r.clicks, 0) / act.length) : 1;
         } else state.clicks++;
-        state.lastClickedTime = Date.now(); nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
-        nBtn.style.background = '#007bff'; nBtn.style.color = 'white'; render();
+
+        state.lastClickedTime = Date.now();
+        nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
+        nBtn.style.background = '#007bff';
+        nBtn.style.color = 'white';
+        render();
       },
       () => {
         if (state.clicks > 0) {
-          state.clicks--; state.lastClickedTime = Date.now(); nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
-          if (state.clicks === 0 && state.isInitiallyAbsent) { nBtn.style.background = '#343a40'; nBtn.style.color = '#6c757d'; }
+          state.clicks--;
+          state.lastClickedTime = Date.now();
+          nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
+
+          if (state.clicks === 0 && state.isInitiallyAbsent) {
+            nBtn.style.background = '#343a40';
+            nBtn.style.color = '#6c757d';
+          }
+
           render();
         }
       }
     );
 
     addLP(aBtn,
-      () => { state.alerts++; aBtn.innerText = `⚠️ ${state.alerts}`; colorAlert(aBtn, state.alerts); },
-      () => { if (state.alerts > 0) { state.alerts--; aBtn.innerText = `⚠️ ${state.alerts}`; colorAlert(aBtn, state.alerts); } }
+      () => {
+        state.alerts++;
+        aBtn.innerText = `⚠️ ${state.alerts}`;
+        colorAlert(aBtn, state.alerts);
+      },
+      () => {
+        if (state.alerts > 0) {
+          state.alerts--;
+          aBtn.innerText = `⚠️ ${state.alerts}`;
+          colorAlert(aBtn, state.alerts);
+        }
+      }
     );
 
-    row.appendChild(nBtn); row.appendChild(aBtn);
+    row.appendChild(nBtn);
+    row.appendChild(aBtn);
   });
-  render(); document.body.appendChild(overlay);
+
+  render();
+  document.body.appendChild(overlay);
 }
 
 async function init() {
   const elements = await waitForAllElements<HTMLElement>('.student');
+
   const data: StudentData[] = elements.map(el => ({
     nameHtml: el.querySelector('.name')?.innerHTML || 'Unknown',
     isInitiallyAbsent: el.classList.contains('absent')
   }));
+
   const shuffled = shuffleArray(data);
   const close = document.querySelector('[role=dialog]:has(.student .name) button[title=Close]');
   close?.addEventListener('click', () => init());
@@ -158,10 +251,15 @@ async function init() {
   setTimeout(() => {
     const save = document.querySelector('[role=dialog]:has(.student .name) .asc-button-container:has(.button-green)') as HTMLButtonElement | null;
     if (!save) return;
+
     const btn = copyElement(save)?.firstElementChild as HTMLElement | null;
     if (!btn) return;
-    btn.classList.remove('button-green'); btn.classList.add('button-blue'); btn.innerHTML = 'Roll Call';
+
+    btn.classList.remove('button-green');
+    btn.classList.add('button-blue');
+    btn.innerHTML = 'Roll Call';
     btn.addEventListener('click', () => createOverlay(shuffled));
   }, 1000);
 }
+
 init();
