@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EduPage Roll Call Extension
 // @namespace    http://tampermonkey.net
-// @version      2026-11-07
+// @version      2026-11-08
 // @include      https://*.edupage.*/*
 // @grant        none
 // ==/UserScript==
@@ -117,24 +117,62 @@ function createOverlay(studentList) {
         btn.style.color = l > 65 ? '#111' : 'white'; // Readable high contrast shift
     };
     const pad = studentList.length > 20 ? '10px' : '14px', fs = studentList.length > 20 ? '15px' : '17px';
+    // Updated pointer handling: allow scrolling and prevent accidental taps.
     const addLP = (el, tap, lp) => {
-        let t, isLP = false;
-        const start = (e) => { if (e.cancelable)
-            e.preventDefault(); el.setPointerCapture(e.pointerId); isLP = false; t = window.setTimeout(() => { isLP = true; if (navigator.vibrate)
-            navigator.vibrate(40); lp(); }, 500); };
-        const cancel = (e) => { if (t)
-            clearTimeout(t); try {
-            el.releasePointerCapture(e.pointerId);
-        }
-        catch (err) { } };
-        const end = (e) => { if (t)
-            clearTimeout(t); try {
-            el.releasePointerCapture(e.pointerId);
-        }
-        catch (err) { } if (!isLP)
-            tap(); isLP = false; };
-        el.style.touchAction = 'none';
+        let t;
+        let isLP = false;
+        let moved = false;
+        let startX = 0;
+        let startY = 0;
+        const MOVE_THRESHOLD = 10;
+        const clear = () => {
+            if (t !== undefined) {
+                clearTimeout(t);
+                t = undefined;
+            }
+        };
+        const start = (e) => {
+            // Ignore non-primary mouse buttons.
+            if (e.pointerType === 'mouse' && e.button !== 0)
+                return;
+            clear();
+            isLP = false;
+            moved = false;
+            startX = e.clientX;
+            startY = e.clientY;
+            t = window.setTimeout(() => {
+                if (!moved) {
+                    isLP = true;
+                    if (navigator.vibrate)
+                        navigator.vibrate(40);
+                    lp();
+                }
+            }, 500);
+        };
+        const move = (e) => {
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            if (Math.abs(dx) > MOVE_THRESHOLD ||
+                Math.abs(dy) > MOVE_THRESHOLD) {
+                moved = true;
+                clear();
+            }
+        };
+        const cancel = () => {
+            clear();
+            moved = true;
+        };
+        const end = () => {
+            clear();
+            if (!moved && !isLP) {
+                tap();
+            }
+            isLP = false;
+        };
+        // Allow native vertical scrolling.
+        el.style.touchAction = 'pan-y';
         el.addEventListener('pointerdown', start);
+        el.addEventListener('pointermove', move);
         el.addEventListener('pointerup', end);
         el.addEventListener('pointercancel', cancel);
         el.addEventListener('contextmenu', e => e.preventDefault());
@@ -156,7 +194,7 @@ function createOverlay(studentList) {
         const aBtn = document.createElement('button');
         aBtn.innerText = '⚠️ 0';
         aBtn.style.cssText = `padding:${pad} 12px;font-size:${fs};font-weight:bold;cursor:pointer;border:none;border-radius:6px;min-width:75px;user-select:none;transition:background 0.2s;`;
-        colorAlert(aBtn, 0); // Correctly calculate initial light yellow style color immediately on boot
+        colorAlert(aBtn, 0);
         const state = { rowElement: row, clicks: 0, alerts: 0, lastClickedTime: 0, isInitiallyAbsent: st.isInitiallyAbsent };
         rowsData.push(state);
         addLP(nBtn, () => {
@@ -183,11 +221,17 @@ function createOverlay(studentList) {
                 render();
             }
         });
-        addLP(aBtn, () => { state.alerts++; aBtn.innerText = `⚠️ ${state.alerts}`; colorAlert(aBtn, state.alerts); }, () => { if (state.alerts > 0) {
-            state.alerts--;
+        addLP(aBtn, () => {
+            state.alerts++;
             aBtn.innerText = `⚠️ ${state.alerts}`;
             colorAlert(aBtn, state.alerts);
-        } });
+        }, () => {
+            if (state.alerts > 0) {
+                state.alerts--;
+                aBtn.innerText = `⚠️ ${state.alerts}`;
+                colorAlert(aBtn, state.alerts);
+            }
+        });
         row.appendChild(nBtn);
         row.appendChild(aBtn);
     });
