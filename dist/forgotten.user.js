@@ -157,7 +157,7 @@ function createOverlay(studentList, groupKey) {
         const hwBtn = document.createElement('button');
         hwBtn.innerText = `📝 ${currentMetrics.homework}`;
         hwBtn.style.cssText = `padding:${pad} 10px;font-size:${fs};font-weight:bold;cursor:pointer;border:none;border-radius:6px;min-width:70px;user-select:none;background:#fd7e14;color:white;`;
-        addLP(bookBtn, () => { currentMetrics.books++; currentMetrics.logs.push(`${getNowStr()} 📘 Forgotten Book`); bookBtn.innerText = `📘 ${currentMetrics.books}`; saveData(); }, () => { if (currentMetrics.books > 0) {
+        addLP(bookBtn, () => { currentMetrics.books++; currentMetrics.logs.push(`${getNowStr()} 📘 Book`); bookBtn.innerText = `📘 ${currentMetrics.books}`; saveData(); }, () => { if (currentMetrics.books > 0) {
             currentMetrics.books--;
             const idx = currentMetrics.logs.map(l => l.includes('📘')).lastIndexOf(true);
             if (idx > -1)
@@ -165,7 +165,7 @@ function createOverlay(studentList, groupKey) {
             bookBtn.innerText = `📘 ${currentMetrics.books}`;
             saveData();
         } });
-        addLP(hwBtn, () => { currentMetrics.homework++; currentMetrics.logs.push(`${getNowStr()} 📝 Forgotten Homework`); hwBtn.innerText = `📝 ${currentMetrics.homework}`; saveData(); }, () => { if (currentMetrics.homework > 0) {
+        addLP(hwBtn, () => { currentMetrics.homework++; currentMetrics.logs.push(`${getNowStr()} 📝 Homework`); hwBtn.innerText = `📝 ${currentMetrics.homework}`; saveData(); }, () => { if (currentMetrics.homework > 0) {
             currentMetrics.homework--;
             const idx = currentMetrics.logs.map(l => l.includes('📝')).lastIndexOf(true);
             if (idx > -1)
