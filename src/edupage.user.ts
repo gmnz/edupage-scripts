@@ -1,99 +1,222 @@
 // ==UserScript==
 // @name         EduPage Roll Call Extension
 // @namespace    http://tampermonkey.net
-// @version      2026-11-08
+// @version      2026-11-11
 // @include      https://*.edupage.*/*
 // @grant        none
 // ==/UserScript==
 
-interface StudentData { nameHtml: string; isInitiallyAbsent: boolean; }
-interface RowItem { rowElement: HTMLDivElement; clicks: number; alerts: number; lastClickedTime: number; isInitiallyAbsent: boolean; }
+interface StudentData {
+  nameHtml: string;
+  isInitiallyAbsent: boolean;
+}
 
-function waitForAllElements<T extends HTMLElement = HTMLElement>(selector: string, minCount = 1, timeout?: number): Promise<T[]> {
+interface RowItem {
+  rowElement: HTMLDivElement;
+  clicks: number;
+  alerts: number;
+  lastClickedTime: number;
+  isInitiallyAbsent: boolean;
+}
+
+// Stores warning counts separately for each student group.
+// Exists only in memory, so reloading the page resets everything.
+const warningStore = new Map<string, Map<string, number>>();
+
+function waitForAllElements<T extends HTMLElement = HTMLElement>(
+  selector: string,
+  minCount = 1,
+  timeout?: number
+): Promise<T[]> {
   return new Promise((resolve, reject) => {
     let timer: number | undefined;
+
     const check = (obs?: MutationObserver) => {
       const el = Array.from(document.querySelectorAll<T>(selector));
-      if (el.length >= minCount) { if (obs) obs.disconnect(); if (timer) clearTimeout(timer); resolve(el); return true; }
+
+      if (el.length >= minCount) {
+        if (obs) obs.disconnect();
+        if (timer) clearTimeout(timer);
+        resolve(el);
+        return true;
+      }
+
       return false;
     };
+
     if (check()) return;
+
     const observer = new MutationObserver((_, obs) => check(obs));
-    observer.observe(document.body, { childList: true, subtree: true });
-    if (timeout) timer = window.setTimeout(() => { observer.disconnect(); reject(new Error("Timeout")); }, timeout);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+
+    if (timeout) {
+      timer = window.setTimeout(() => {
+        observer.disconnect();
+        reject(new Error("Timeout"));
+      }, timeout);
+    }
   });
 }
 
 function copyElement(orig: HTMLButtonElement): HTMLButtonElement | null {
   if (!orig) return null;
+
   const clone = orig.cloneNode(true) as HTMLButtonElement;
   clone.id = 'new-button';
+
   orig.parentElement?.insertBefore(clone, orig);
+
   return clone;
 }
 
 function shuffleArray<T>(arr: T[]): T[] {
   const shuff = [...arr];
+
   for (let i = shuff.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [shuff[i]!, shuff[j]!] = [shuff[j]!, shuff[i]!];
   }
+
   return shuff;
 }
 
-function createOverlay(studentList: StudentData[]): void {
+// groupKey identifies the student group.
+// Warning counts survive closing and reopening the overlay.
+function createOverlay(studentList: StudentData[], groupKey: string): void {
+
+  let groupWarnings = warningStore.get(groupKey);
+
+  if (!groupWarnings) {
+    groupWarnings = new Map<string, number>();
+    warningStore.set(groupKey, groupWarnings);
+  }
+
   const overlay = document.createElement('div');
+
   overlay.style.cssText = "position:fixed;background:rgba(0,0,0,0.95);z-index:2147483647;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;box-sizing:border-box;overflow-y:auto;padding:12px;font-family:Arial,sans-serif;user-select:none;";
+
   const resize = () => {
     const vv = window.visualViewport;
-    if (vv) { overlay.style.width = vv.width + "px"; overlay.style.height = vv.height + "px"; overlay.style.top = vv.offsetTop + "px"; overlay.style.left = vv.offsetLeft + "px"; }
-    else { overlay.style.width = "100%"; overlay.style.height = "100%"; overlay.style.top = "0"; overlay.style.left = "0"; }
+
+    if (vv) {
+      overlay.style.width = vv.width + "px";
+      overlay.style.height = vv.height + "px";
+      overlay.style.top = vv.offsetTop + "px";
+      overlay.style.left = vv.offsetLeft + "px";
+    } else {
+      overlay.style.width = "100%";
+      overlay.style.height = "100%";
+      overlay.style.top = "0";
+      overlay.style.left = "0";
+    }
   };
+
   resize();
-  if (window.visualViewport) { window.visualViewport.addEventListener('resize', resize); window.visualViewport.addEventListener('scroll', resize); }
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', resize);
+    window.visualViewport.addEventListener('scroll', resize);
+  }
+
   let wl: any = null;
-  const lock = async () => { try { if ('wakeLock' in navigator) wl = await (navigator as any).wakeLock.request('screen'); } catch (e) { } };
-  const unlock = async () => { if (wl) { try { await wl.release(); wl = null; } catch (e) { } } };
+
+  const lock = async () => {
+    try {
+      if ('wakeLock' in navigator) {
+        wl = await (navigator as any).wakeLock.request('screen');
+      }
+    } catch (e) { }
+  };
+
+  const unlock = async () => {
+    if (wl) {
+      try {
+        await wl.release();
+        wl = null;
+      } catch (e) { }
+    }
+  };
+
   lock();
-  const vis = () => { if (wl !== null && document.visibilityState === 'visible') lock(); };
+
+  const vis = () => {
+    if (wl !== null && document.visibilityState === 'visible') lock();
+  };
+
   document.addEventListener('visibilitychange', vis);
+
   const container = document.createElement('div');
   container.style.cssText = "display:flex;flex-direction:column;gap:8px;width:100%;";
+
   overlay.appendChild(container);
 
   const closeBtn = document.createElement('button');
   closeBtn.innerText = '✕ Close Roll Call';
+
   closeBtn.style.cssText = "padding:14px;font-size:16px;font-weight:bold;cursor:pointer;border:none;border-radius:6px;background:#ff4d4d;color:white;margin-top:16px;";
+
   closeBtn.onclick = () => {
-    if (window.visualViewport) { window.visualViewport.removeEventListener('resize', resize); window.visualViewport.removeEventListener('scroll', resize); }
+    if (window.visualViewport) {
+      window.visualViewport.removeEventListener('resize', resize);
+      window.visualViewport.removeEventListener('scroll', resize);
+    }
+
     document.removeEventListener('visibilitychange', vis);
-    unlock(); overlay.remove();
+
+    unlock();
+    overlay.remove();
+
+    // IMPORTANT:
+    // Do not clear groupWarnings or warningStore here.
+    // Counts must survive closing the overlay.
   };
 
   const rowsData: RowItem[] = [];
 
   const render = () => {
-    const active = rowsData.filter(r => !r.isInitiallyAbsent || r.clicks > 0);
-    const absent = rowsData.filter(r => r.isInitiallyAbsent && r.clicks === 0);
-    active.sort((a, b) => a.clicks !== b.clicks ? a.clicks - b.clicks : a.lastClickedTime - b.lastClickedTime);
+    const active = rowsData.filter(
+      r => !r.isInitiallyAbsent || r.clicks > 0
+    );
+
+    const absent = rowsData.filter(
+      r => r.isInitiallyAbsent && r.clicks === 0
+    );
+
+    active.sort((a, b) =>
+      a.clicks !== b.clicks
+        ? a.clicks - b.clicks
+        : a.lastClickedTime - b.lastClickedTime
+    );
+
     active.forEach(r => container.appendChild(r.rowElement));
     absent.forEach(r => container.appendChild(r.rowElement));
+
     container.appendChild(closeBtn);
   };
 
   const colorAlert = (btn: HTMLButtonElement, count: number) => {
-    // 0 starts at soft, light yellow. As it climbs to 20, it descends into intense dark red.
+    // 0 starts at soft, light yellow.
+    // As it climbs to 20, it descends into intense dark red.
     const f = Math.min(count / 20, 1);
-    const h = Math.round(60 - (f * 60)); // Hue: 60 (Yellow) down to 0 (Red)
-    const l = Math.round(85 - (f * 45)); // Lightness: 85% (Light) down to 40% (Darker bold red)
+    const h = Math.round(60 - (f * 60));
+    const l = Math.round(85 - (f * 45));
+
     btn.style.background = `hsl(${h},100%,${l}%)`;
-    btn.style.color = l > 65 ? '#111' : 'white'; // Readable high contrast shift
+    btn.style.color = l > 65 ? '#111' : 'white';
   };
 
-  const pad = studentList.length > 20 ? '10px' : '14px', fs = studentList.length > 20 ? '15px' : '17px';
+  const pad = studentList.length > 20 ? '10px' : '14px';
+  const fs = studentList.length > 20 ? '15px' : '17px';
 
-  // Updated pointer handling: allow scrolling and prevent accidental taps.
-  const addLP = (el: HTMLElement, tap: () => void, lp: () => void) => {
+  // Pointer handling: allow scrolling and prevent accidental taps.
+  const addLP = (
+    el: HTMLElement,
+    tap: () => void,
+    lp: () => void
+  ) => {
     let t: number | undefined;
     let isLP = false;
     let moved = false;
@@ -123,7 +246,9 @@ function createOverlay(studentList: StudentData[]): void {
       t = window.setTimeout(() => {
         if (!moved) {
           isLP = true;
+
           if (navigator.vibrate) navigator.vibrate(40);
+
           lp();
         }
       }, 500);
@@ -133,8 +258,10 @@ function createOverlay(studentList: StudentData[]): void {
       const dx = e.clientX - startX;
       const dy = e.clientY - startY;
 
-      if (Math.abs(dx) > MOVE_THRESHOLD ||
-        Math.abs(dy) > MOVE_THRESHOLD) {
+      if (
+        Math.abs(dx) > MOVE_THRESHOLD ||
+        Math.abs(dy) > MOVE_THRESHOLD
+      ) {
         moved = true;
         clear();
       }
@@ -171,36 +298,74 @@ function createOverlay(studentList: StudentData[]): void {
 
     const nBtn = document.createElement('button');
     nBtn.innerHTML = `${st.nameHtml} (0)`;
+
     nBtn.style.cssText = `padding:${pad} 14px;font-size:${fs};cursor:pointer;border:none;border-radius:6px;text-align:left;flex:1;user-select:none;`;
 
-    if (st.isInitiallyAbsent) { nBtn.style.background = '#343a40'; nBtn.style.color = '#6c757d'; }
-    else { nBtn.style.background = '#007bff'; nBtn.style.color = 'white'; }
+    if (st.isInitiallyAbsent) {
+      nBtn.style.background = '#343a40';
+      nBtn.style.color = '#6c757d';
+    } else {
+      nBtn.style.background = '#007bff';
+      nBtn.style.color = 'white';
+    }
+
+    // Identify the student consistently.
+    const cleanName = st.nameHtml
+      .replace(/<[^>]*>/g, '')
+      .trim();
+
+    // Restore previously saved warning count.
+    const savedAlerts = groupWarnings.get(cleanName) ?? 0;
 
     const aBtn = document.createElement('button');
-    aBtn.innerText = '⚠️ 0';
-    aBtn.style.cssText = `padding:${pad} 12px;font-size:${fs};font-weight:bold;cursor:pointer;border:none;border-radius:6px;min-width:75px;user-select:none;transition:background 0.2s;`;
-    colorAlert(aBtn, 0);
+    aBtn.innerText = `⚠️ ${savedAlerts}`;
 
-    const state: RowItem = { rowElement: row, clicks: 0, alerts: 0, lastClickedTime: 0, isInitiallyAbsent: st.isInitiallyAbsent };
+    aBtn.style.cssText = `padding:${pad} 12px;font-size:${fs};font-weight:bold;cursor:pointer;border:none;border-radius:6px;min-width:75px;user-select:none;transition:background 0.2s;`;
+
+    colorAlert(aBtn, savedAlerts);
+
+    const state: RowItem = {
+      rowElement: row,
+      clicks: 0,
+      alerts: savedAlerts,
+      lastClickedTime: 0,
+      isInitiallyAbsent: st.isInitiallyAbsent
+    };
+
     rowsData.push(state);
 
-    addLP(nBtn,
+    // Student click counter.
+    addLP(
+      nBtn,
       () => {
         if (state.isInitiallyAbsent && state.clicks === 0) {
-          const act = rowsData.filter(r => r !== state && (!r.isInitiallyAbsent || r.clicks > 0));
-          state.clicks = act.length > 0 ? Math.round(act.reduce((s, r) => s + r.clicks, 0) / act.length) : 1;
-        } else state.clicks++;
+          const act = rowsData.filter(
+            r => r !== state &&
+              (!r.isInitiallyAbsent || r.clicks > 0)
+          );
+
+          state.clicks = act.length > 0
+            ? Math.round(
+                act.reduce((s, r) => s + r.clicks, 0) / act.length
+              )
+            : 1;
+        } else {
+          state.clicks++;
+        }
 
         state.lastClickedTime = Date.now();
+
         nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
         nBtn.style.background = '#007bff';
         nBtn.style.color = 'white';
+
         render();
       },
       () => {
         if (state.clicks > 0) {
           state.clicks--;
           state.lastClickedTime = Date.now();
+
           nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
 
           if (state.clicks === 0 && state.isInitiallyAbsent) {
@@ -213,15 +378,24 @@ function createOverlay(studentList: StudentData[]): void {
       }
     );
 
-    addLP(aBtn,
+    // Warning counter.
+    // Every change is immediately saved in the in-memory group store.
+    addLP(
+      aBtn,
       () => {
         state.alerts++;
+
+        groupWarnings.set(cleanName, state.alerts);
+
         aBtn.innerText = `⚠️ ${state.alerts}`;
         colorAlert(aBtn, state.alerts);
       },
       () => {
         if (state.alerts > 0) {
           state.alerts--;
+
+          groupWarnings.set(cleanName, state.alerts);
+
           aBtn.innerText = `⚠️ ${state.alerts}`;
           colorAlert(aBtn, state.alerts);
         }
@@ -233,32 +407,70 @@ function createOverlay(studentList: StudentData[]): void {
   });
 
   render();
+
   document.body.appendChild(overlay);
 }
 
 async function init() {
   const elements = await waitForAllElements<HTMLElement>('.student');
 
+  // Identify the group, following forgotten.user.ts.
+  let groupName = "DefaultGroup";
+
+  try {
+    const groupHeader = document.querySelector(
+      '.dlg-header > .icon.students'
+    )?.nextElementSibling?.firstElementChild as HTMLElement | null;
+
+    if (groupHeader && groupHeader.innerText) {
+      groupName = groupHeader.innerText.trim();
+    }
+  } catch (e) { }
+
   const data: StudentData[] = elements.map(el => ({
     nameHtml: el.querySelector('.name')?.innerHTML || 'Unknown',
     isInitiallyAbsent: el.classList.contains('absent')
   }));
 
+  // Create a unique identifier for this group.
+  // Sorting ensures the key stays identical regardless of student order.
+  const studentNames = data
+    .map(st => st.nameHtml.replace(/<[^>]*>/g, '').trim())
+    .sort();
+
+  const groupKey = JSON.stringify([
+    groupName,
+    studentNames
+  ]);
+
   const shuffled = shuffleArray(data);
-  const close = document.querySelector('[role=dialog]:has(.student .name) button[title=Close]');
+
+  const close = document.querySelector(
+    '[role=dialog]:has(.student .name) button[title=Close]'
+  );
+
   close?.addEventListener('click', () => init());
 
   setTimeout(() => {
-    const save = document.querySelector('[role=dialog]:has(.student .name) .asc-button-container:has(.button-green)') as HTMLButtonElement | null;
+    const save = document.querySelector(
+      '[role=dialog]:has(.student .name) .asc-button-container:has(.button-green)'
+    ) as HTMLButtonElement | null;
+
     if (!save) return;
 
     const btn = copyElement(save)?.firstElementChild as HTMLElement | null;
+
     if (!btn) return;
 
     btn.classList.remove('button-green');
     btn.classList.add('button-blue');
+
     btn.innerHTML = 'Roll Call';
-    btn.addEventListener('click', () => createOverlay(shuffled));
+
+    btn.addEventListener('click', () => {
+      createOverlay(shuffled, groupKey);
+    });
+
   }, 1000);
 }
 
