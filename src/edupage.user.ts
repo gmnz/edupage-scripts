@@ -1,3 +1,4 @@
+
 // ==UserScript==
 // @name         EduPage Roll Call Extension
 // @namespace    http://tampermonkey.net
@@ -19,9 +20,15 @@ interface RowItem {
   isInitiallyAbsent: boolean;
 }
 
-// Stores warning counts separately for each student group.
-// Exists only in memory, so reloading the page resets everything.
-const warningStore = new Map<string, Map<string, number>>();
+interface StudentCounts {
+  clicks: number;
+  alerts: number;
+  lastClickedTime: number;
+}
+
+// Stores all counts in memory only.
+// Everything resets when the page is reloaded.
+const countStore = new Map<string, Map<string, StudentCounts>>();
 
 function waitForAllElements<T extends HTMLElement = HTMLElement>(
   selector: string,
@@ -83,15 +90,14 @@ function shuffleArray<T>(arr: T[]): T[] {
   return shuff;
 }
 
-// groupKey identifies the student group.
-// Warning counts survive closing and reopening the overlay.
 function createOverlay(studentList: StudentData[], groupKey: string): void {
 
-  let groupWarnings = warningStore.get(groupKey);
+  // Retrieve existing counts for this student group.
+  let groupCounts = countStore.get(groupKey);
 
-  if (!groupWarnings) {
-    groupWarnings = new Map<string, number>();
-    warningStore.set(groupKey, groupWarnings);
+  if (!groupCounts) {
+    groupCounts = new Map<string, StudentCounts>();
+    countStore.set(groupKey, groupCounts);
   }
 
   const overlay = document.createElement('div');
@@ -169,9 +175,8 @@ function createOverlay(studentList: StudentData[], groupKey: string): void {
     unlock();
     overlay.remove();
 
-    // IMPORTANT:
-    // Do not clear groupWarnings or warningStore here.
-    // Counts must survive closing the overlay.
+    // Do not clear countStore.
+    // Both counters must survive closing the overlay.
   };
 
   const rowsData: RowItem[] = [];
@@ -296,12 +301,31 @@ function createOverlay(studentList: StudentData[], groupKey: string): void {
     const row = document.createElement('div');
     row.style.cssText = "display:flex;width:100%;gap:6px;box-sizing:border-box;";
 
+    // Identify the student consistently.
+    const cleanName = st.nameHtml
+      .replace(/<[^>]*>/g, '')
+      .trim();
+
+    // Retrieve existing counts or initialize them.
+    let savedCounts = groupCounts.get(cleanName);
+
+    if (!savedCounts) {
+      savedCounts = {
+        clicks: 0,
+        alerts: 0,
+        lastClickedTime: 0
+      };
+
+      groupCounts.set(cleanName, savedCounts);
+    }
+
     const nBtn = document.createElement('button');
-    nBtn.innerHTML = `${st.nameHtml} (0)`;
+
+    nBtn.innerHTML = `${st.nameHtml} (${savedCounts.clicks})`;
 
     nBtn.style.cssText = `padding:${pad} 14px;font-size:${fs};cursor:pointer;border:none;border-radius:6px;text-align:left;flex:1;user-select:none;`;
 
-    if (st.isInitiallyAbsent) {
+    if (st.isInitiallyAbsent && savedCounts.clicks === 0) {
       nBtn.style.background = '#343a40';
       nBtn.style.color = '#6c757d';
     } else {
@@ -309,26 +333,19 @@ function createOverlay(studentList: StudentData[], groupKey: string): void {
       nBtn.style.color = 'white';
     }
 
-    // Identify the student consistently.
-    const cleanName = st.nameHtml
-      .replace(/<[^>]*>/g, '')
-      .trim();
-
-    // Restore previously saved warning count.
-    const savedAlerts = groupWarnings.get(cleanName) ?? 0;
-
     const aBtn = document.createElement('button');
-    aBtn.innerText = `⚠️ ${savedAlerts}`;
+
+    aBtn.innerText = `⚠️ ${savedCounts.alerts}`;
 
     aBtn.style.cssText = `padding:${pad} 12px;font-size:${fs};font-weight:bold;cursor:pointer;border:none;border-radius:6px;min-width:75px;user-select:none;transition:background 0.2s;`;
 
-    colorAlert(aBtn, savedAlerts);
+    colorAlert(aBtn, savedCounts.alerts);
 
     const state: RowItem = {
       rowElement: row,
-      clicks: 0,
-      alerts: savedAlerts,
-      lastClickedTime: 0,
+      clicks: savedCounts.clicks,
+      alerts: savedCounts.alerts,
+      lastClickedTime: savedCounts.lastClickedTime,
       isInitiallyAbsent: st.isInitiallyAbsent
     };
 
@@ -355,6 +372,13 @@ function createOverlay(studentList: StudentData[], groupKey: string): void {
 
         state.lastClickedTime = Date.now();
 
+        // Save both counters in memory.
+        groupCounts.set(cleanName, {
+          clicks: state.clicks,
+          alerts: state.alerts,
+          lastClickedTime: state.lastClickedTime
+        });
+
         nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
         nBtn.style.background = '#007bff';
         nBtn.style.color = 'white';
@@ -365,6 +389,13 @@ function createOverlay(studentList: StudentData[], groupKey: string): void {
         if (state.clicks > 0) {
           state.clicks--;
           state.lastClickedTime = Date.now();
+
+          // Save both counters in memory.
+          groupCounts.set(cleanName, {
+            clicks: state.clicks,
+            alerts: state.alerts,
+            lastClickedTime: state.lastClickedTime
+          });
 
           nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
 
@@ -379,13 +410,17 @@ function createOverlay(studentList: StudentData[], groupKey: string): void {
     );
 
     // Warning counter.
-    // Every change is immediately saved in the in-memory group store.
     addLP(
       aBtn,
       () => {
         state.alerts++;
 
-        groupWarnings.set(cleanName, state.alerts);
+        // Save both counters in memory.
+        groupCounts.set(cleanName, {
+          clicks: state.clicks,
+          alerts: state.alerts,
+          lastClickedTime: state.lastClickedTime
+        });
 
         aBtn.innerText = `⚠️ ${state.alerts}`;
         colorAlert(aBtn, state.alerts);
@@ -394,7 +429,12 @@ function createOverlay(studentList: StudentData[], groupKey: string): void {
         if (state.alerts > 0) {
           state.alerts--;
 
-          groupWarnings.set(cleanName, state.alerts);
+          // Save both counters in memory.
+          groupCounts.set(cleanName, {
+            clicks: state.clicks,
+            alerts: state.alerts,
+            lastClickedTime: state.lastClickedTime
+          });
 
           aBtn.innerText = `⚠️ ${state.alerts}`;
           colorAlert(aBtn, state.alerts);
@@ -432,8 +472,8 @@ async function init() {
     isInitiallyAbsent: el.classList.contains('absent')
   }));
 
-  // Create a unique identifier for this group.
-  // Sorting ensures the key stays identical regardless of student order.
+  // Identify the group by its name and complete student list.
+  // Sorting ensures that student order does not affect the group key.
   const studentNames = data
     .map(st => st.nameHtml.replace(/<[^>]*>/g, '').trim())
     .sort();
@@ -464,7 +504,6 @@ async function init() {
 
     btn.classList.remove('button-green');
     btn.classList.add('button-blue');
-
     btn.innerHTML = 'Roll Call';
 
     btn.addEventListener('click', () => {

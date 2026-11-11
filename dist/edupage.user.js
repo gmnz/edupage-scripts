@@ -5,9 +5,9 @@
 // @include      https://*.edupage.*/*
 // @grant        none
 // ==/UserScript==
-// Stores warning counts separately for each student group.
-// Exists only in memory, so reloading the page resets everything.
-const warningStore = new Map();
+// Stores all counts in memory only.
+// Everything resets when the page is reloaded.
+const countStore = new Map();
 function waitForAllElements(selector, minCount = 1, timeout) {
     return new Promise((resolve, reject) => {
         let timer;
@@ -54,13 +54,12 @@ function shuffleArray(arr) {
     }
     return shuff;
 }
-// groupKey identifies the student group.
-// Warning counts survive closing and reopening the overlay.
 function createOverlay(studentList, groupKey) {
-    let groupWarnings = warningStore.get(groupKey);
-    if (!groupWarnings) {
-        groupWarnings = new Map();
-        warningStore.set(groupKey, groupWarnings);
+    // Retrieve existing counts for this student group.
+    let groupCounts = countStore.get(groupKey);
+    if (!groupCounts) {
+        groupCounts = new Map();
+        countStore.set(groupKey, groupCounts);
     }
     const overlay = document.createElement('div');
     overlay.style.cssText = "position:fixed;background:rgba(0,0,0,0.95);z-index:2147483647;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;box-sizing:border-box;overflow-y:auto;padding:12px;font-family:Arial,sans-serif;user-select:none;";
@@ -122,9 +121,8 @@ function createOverlay(studentList, groupKey) {
         document.removeEventListener('visibilitychange', vis);
         unlock();
         overlay.remove();
-        // IMPORTANT:
-        // Do not clear groupWarnings or warningStore here.
-        // Counts must survive closing the overlay.
+        // Do not clear countStore.
+        // Both counters must survive closing the overlay.
     };
     const rowsData = [];
     const render = () => {
@@ -211,10 +209,24 @@ function createOverlay(studentList, groupKey) {
     studentList.forEach(st => {
         const row = document.createElement('div');
         row.style.cssText = "display:flex;width:100%;gap:6px;box-sizing:border-box;";
+        // Identify the student consistently.
+        const cleanName = st.nameHtml
+            .replace(/<[^>]*>/g, '')
+            .trim();
+        // Retrieve existing counts or initialize them.
+        let savedCounts = groupCounts.get(cleanName);
+        if (!savedCounts) {
+            savedCounts = {
+                clicks: 0,
+                alerts: 0,
+                lastClickedTime: 0
+            };
+            groupCounts.set(cleanName, savedCounts);
+        }
         const nBtn = document.createElement('button');
-        nBtn.innerHTML = `${st.nameHtml} (0)`;
+        nBtn.innerHTML = `${st.nameHtml} (${savedCounts.clicks})`;
         nBtn.style.cssText = `padding:${pad} 14px;font-size:${fs};cursor:pointer;border:none;border-radius:6px;text-align:left;flex:1;user-select:none;`;
-        if (st.isInitiallyAbsent) {
+        if (st.isInitiallyAbsent && savedCounts.clicks === 0) {
             nBtn.style.background = '#343a40';
             nBtn.style.color = '#6c757d';
         }
@@ -222,21 +234,15 @@ function createOverlay(studentList, groupKey) {
             nBtn.style.background = '#007bff';
             nBtn.style.color = 'white';
         }
-        // Identify the student consistently.
-        const cleanName = st.nameHtml
-            .replace(/<[^>]*>/g, '')
-            .trim();
-        // Restore previously saved warning count.
-        const savedAlerts = groupWarnings.get(cleanName) ?? 0;
         const aBtn = document.createElement('button');
-        aBtn.innerText = `⚠️ ${savedAlerts}`;
+        aBtn.innerText = `⚠️ ${savedCounts.alerts}`;
         aBtn.style.cssText = `padding:${pad} 12px;font-size:${fs};font-weight:bold;cursor:pointer;border:none;border-radius:6px;min-width:75px;user-select:none;transition:background 0.2s;`;
-        colorAlert(aBtn, savedAlerts);
+        colorAlert(aBtn, savedCounts.alerts);
         const state = {
             rowElement: row,
-            clicks: 0,
-            alerts: savedAlerts,
-            lastClickedTime: 0,
+            clicks: savedCounts.clicks,
+            alerts: savedCounts.alerts,
+            lastClickedTime: savedCounts.lastClickedTime,
             isInitiallyAbsent: st.isInitiallyAbsent
         };
         rowsData.push(state);
@@ -253,6 +259,12 @@ function createOverlay(studentList, groupKey) {
                 state.clicks++;
             }
             state.lastClickedTime = Date.now();
+            // Save both counters in memory.
+            groupCounts.set(cleanName, {
+                clicks: state.clicks,
+                alerts: state.alerts,
+                lastClickedTime: state.lastClickedTime
+            });
             nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
             nBtn.style.background = '#007bff';
             nBtn.style.color = 'white';
@@ -261,6 +273,12 @@ function createOverlay(studentList, groupKey) {
             if (state.clicks > 0) {
                 state.clicks--;
                 state.lastClickedTime = Date.now();
+                // Save both counters in memory.
+                groupCounts.set(cleanName, {
+                    clicks: state.clicks,
+                    alerts: state.alerts,
+                    lastClickedTime: state.lastClickedTime
+                });
                 nBtn.innerHTML = `${st.nameHtml} (${state.clicks})`;
                 if (state.clicks === 0 && state.isInitiallyAbsent) {
                     nBtn.style.background = '#343a40';
@@ -270,16 +288,25 @@ function createOverlay(studentList, groupKey) {
             }
         });
         // Warning counter.
-        // Every change is immediately saved in the in-memory group store.
         addLP(aBtn, () => {
             state.alerts++;
-            groupWarnings.set(cleanName, state.alerts);
+            // Save both counters in memory.
+            groupCounts.set(cleanName, {
+                clicks: state.clicks,
+                alerts: state.alerts,
+                lastClickedTime: state.lastClickedTime
+            });
             aBtn.innerText = `⚠️ ${state.alerts}`;
             colorAlert(aBtn, state.alerts);
         }, () => {
             if (state.alerts > 0) {
                 state.alerts--;
-                groupWarnings.set(cleanName, state.alerts);
+                // Save both counters in memory.
+                groupCounts.set(cleanName, {
+                    clicks: state.clicks,
+                    alerts: state.alerts,
+                    lastClickedTime: state.lastClickedTime
+                });
                 aBtn.innerText = `⚠️ ${state.alerts}`;
                 colorAlert(aBtn, state.alerts);
             }
@@ -305,8 +332,8 @@ async function init() {
         nameHtml: el.querySelector('.name')?.innerHTML || 'Unknown',
         isInitiallyAbsent: el.classList.contains('absent')
     }));
-    // Create a unique identifier for this group.
-    // Sorting ensures the key stays identical regardless of student order.
+    // Identify the group by its name and complete student list.
+    // Sorting ensures that student order does not affect the group key.
     const studentNames = data
         .map(st => st.nameHtml.replace(/<[^>]*>/g, '').trim())
         .sort();
